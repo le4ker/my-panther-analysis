@@ -86,7 +86,7 @@ jobs:
                   repo: context.repo.repo,
                   title: 'Sync with upstream repository',
                   head: `sync_upstream_${{steps.set_upstream.outputs.latest-release}}`,
-                  base: ${{ steps.default-branch.outputs.name }},
+                  base: '${{ steps.default-branch.outputs.name }}',
                   body: 'Automated PR to sync changes from upstream repository'
                 });
                 console.log(`Created PR: ${pr.html_url}`);
