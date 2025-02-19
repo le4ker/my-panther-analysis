@@ -47,9 +47,13 @@ jobs:
       - name: Remove .github directory changes
         if: steps.sync.outputs.has_new_commits == 'true'
         run: |
-          git checkout origin/main -- .github/
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "github-actions[bot]"
+          git fetch origin main
+          git restore --source=origin/main -- .github/
           git add .github/
-          git commit -m "Restore .github directory from main branch" || true
+          git diff-index --quiet HEAD || git commit -m "Restore .github directory from main branch"
+          git push origin "sync_upstream_${{steps.set_upstream.outputs.latest-release}}"
 
       - name: Create Pull Request
         if: steps.sync.outputs.has_new_commits == 'true'
