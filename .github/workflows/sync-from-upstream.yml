@@ -44,15 +44,27 @@ jobs:
           upstream_sync_repo: panther-labs/panther-analysis
           upstream_pull_args: "--allow-unrelated-histories"
 
+      - name: Get default branch
+        id: default-branch
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea #v7.0.1
+        with:
+          script: |
+            const { data: repo } = await github.rest.repos.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo
+            });
+            core.setOutput('name', repo.default_branch);
+
       - name: Remove .github directory changes
         if: steps.sync.outputs.has_new_commits == 'true'
         run: |
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git config --global user.name "github-actions[bot]"
-          git fetch origin main
-          git restore --source=origin/main -- .github/
+          git fetch origin ${{ steps.default-branch.outputs.name }}
+          rm -rf .github/
+          git checkout origin/${{ steps.default-branch.outputs.name }} -- .github/
           git add .github/
-          git diff-index --quiet HEAD || git commit -m "Restore .github directory from main branch"
+          git commit -m "Restore .github directory from default branch"
           git push origin "sync_upstream_${{steps.set_upstream.outputs.latest-release}}"
 
       - name: Create Pull Request
@@ -74,7 +86,7 @@ jobs:
                   repo: context.repo.repo,
                   title: 'Sync with upstream repository',
                   head: `sync_upstream_${{steps.set_upstream.outputs.latest-release}}`,
-                  base: 'main',
+                  base: ${{ steps.default-branch.outputs.name }},
                   body: 'Automated PR to sync changes from upstream repository'
                 });
                 console.log(`Created PR: ${pr.html_url}`);
