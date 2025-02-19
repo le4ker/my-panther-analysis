@@ -1,108 +1,87 @@
-name: sync-panther-analysis-from-upstream
+name: Sync Fork with Upstream
 
 on:
   schedule:
-    # 15:00Z, every Wednesday
-    - cron: "00 15 * * 3"
-  workflow_dispatch: # or on button click
-
-env:
-  YOUR_REPO_PRIMARY_BRANCH_NAME: "main"
+    - cron: "0 15 * * 3" # Every Wednesday at 15:00 UTC
+  workflow_dispatch:
 
 jobs:
-  check_upstream:
-    if: |
-      github.repository != 'panther-labs/panther-analysis'
+  sync:
+    if: github.repository != 'panther-labs/panther-analysis'
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea #v7.0.1
         id: set_upstream
-        name: Check Upstream
         with:
           script: |
-            const fs = require('fs');
-            const upstreamLatest = await github.rest.repos.getLatestRelease({
+            const { data: { tag_name } } = await github.rest.repos.getLatestRelease({
               owner: 'panther-labs',
               repo: 'panther-analysis'
-            })
-            fs.appendFileSync(
-              process.env['GITHUB_OUTPUT'],
-              'latest-release=' +  upstreamLatest.data.tag_name + '\n');
-      ## CREATE A BRANCH
-      - uses: peterjgrainger/action-create-branch@10c7d268152480ae859347db45dc69086cef1d9c #v3.0.0
-        id: create_a_branch
+            });
+            core.setOutput('latest-release', tag_name);
+
+      - name: Create sync branch
+        uses: peterjgrainger/action-create-branch@10c7d268152480ae859347db45dc69086cef1d9c #v3.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           branch: "sync_upstream_${{steps.set_upstream.outputs.latest-release}}"
-      # Checkout this repo into the branch
-      - name: Checkout your local repo in PR branch
+
+      - name: Checkout target branch
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 #v4.2.2
         with:
           ref: "sync_upstream_${{steps.set_upstream.outputs.latest-release}}"
-          token: ${{ secrets.GITHUB_TOKEN }}
-      # Sync this branch with upstream
+          fetch-depth: 0
+
       - name: Sync upstream changes into PR branch
         id: sync
         uses: aormsby/Fork-Sync-With-Upstream-action@1090e365224fc834e7e1de521c417ded2d6fcb53 #v3.4.1
         with:
-          # target_sync_branch == the branch in your fork that you want to sync to upstream
           target_sync_branch: "sync_upstream_${{steps.set_upstream.outputs.latest-release}}"
-          # REQUIRED 'target_repo_token' exactly like this!
           target_repo_token: ${{ secrets.GITHUB_TOKEN }}
-          #  NOTE NOTE NOTE NOTE
-          # If you want to run this job and sync to upstream's master instead of releases
-          #  change the usptream_sync_branch to master
-          upstream_sync_branch: ${{steps.set_upstream.outputs.latest-release}}
+          upstream_sync_branch: "refs/tags/${{steps.set_upstream.outputs.latest-release}}"
           upstream_sync_repo: panther-labs/panther-analysis
-          #test_mode: true
           upstream_pull_args: "--allow-unrelated-histories"
-      # Create a PR from this branch back to this fork's primary branch
-      - uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea #v7.0.1
-        id: create_pr
-        name: Create a PR to bring upstream changes into the local repo primary branch
+
+      - name: Remove .github directory changes
         if: steps.sync.outputs.has_new_commits == 'true'
+        run: |
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "github-actions[bot]"
+          git fetch origin main
+          git restore --source=origin/main -- .github/
+          git add .github/
+          git diff-index --quiet HEAD || git commit -m "Restore .github directory from main branch"
+          git push origin "sync_upstream_${{steps.set_upstream.outputs.latest-release}}"
+
+      - name: Create Pull Request
+        if: steps.sync.outputs.has_new_commits == 'true'
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea #v7.0.1
         with:
-          result-encoding: string
           script: |
-            const fs = require('fs');
             try {
-              const response = await github.rest.pulls.create({
-                owner: '${{github.repository_owner}}',
-                repo: '${{  github.event.repository.name }}',
-                title: 'sync this fork to panther-labs/panther-analysis ${{steps.set_upstream.outputs.latest-release}}',
-                head: 'sync_upstream_${{steps.set_upstream.outputs.latest-release}}',
-                base: '${{env.YOUR_REPO_PRIMARY_BRANCH_NAME}}',
+              const { data: pulls } = await github.rest.pulls.list({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                head: `${context.repo.owner}:sync_upstream_${{steps.set_upstream.outputs.latest-release}}`,
+                state: 'open'
               });
-            } catch(e) {
-              if (e.response && e.response.data && e.response.data.errors && e.response.data.errors.length > 0 && e.response.data.errors[0].message && e.response.data.errors[0].message.includes('No commits between')) {
-                fs.appendFileSync(
-                  process.env['GITHUB_OUTPUT'],
-                  'pr_state=no-updates\n');
-              } else if (e.response && e.response.data && e.response.data.errors && e.response.data.errors.length > 0 && e.response.data.errors[0].message && e.response.data.errors[0].message.includes('A pull request already exists for')) {
-                fs.appendFileSync(
-                  process.env['GITHUB_OUTPUT'],
-                  'pr_state=update-pr-already-exists\n');
+              
+              if (pulls.length === 0) {
+                const { data: pr } = await github.rest.pulls.create({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  title: 'Sync with upstream repository',
+                  head: `sync_upstream_${{steps.set_upstream.outputs.latest-release}}`,
+                  base: 'main',
+                  body: 'Automated PR to sync changes from upstream repository'
+                });
+                console.log(`Created PR: ${pr.html_url}`);
               } else {
-                fs.appendFileSync(
-                  process.env['GITHUB_OUTPUT'],
-                  'pr_state=error\n');
-                console.log(e);
+                console.log('PR already exists');
               }
+            } catch (error) {
+              console.log(`Error creating PR: ${error}`);
+              core.setFailed(error.message);
             }
-      - id: pr_not_needed_already_exists
-        name: PR for latest release already exists
-        if: ${{ steps.create_pr.outputs.pr_state == 'update-pr-already-exists' }}
-        run: |
-          echo "PR for latest release was previously created and is not closed"
-      - id: pr_not_needed_in_sync
-        name: Local repo already synced to latest release
-        if: ${{ steps.create_pr.outputs.pr_state == 'no-updates' }}
-        run: |
-          echo "Local repo in sync with latest upstream release"
-      - id: pr_create_error
-        name: Create PR step had an error
-        if: ${{ steps.create_pr.outputs.pr_state == 'error' }}
-        run: |
-          echo "unhandled exception in PR create step. Check output of that step."
-          exit 128
