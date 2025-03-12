@@ -15,7 +15,7 @@ jobs:
       github.repository != 'panther-labs/panther-analysis'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea #v7.0.1
+      - uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea #v7.0.0
         id: set_upstream
         name: Check Upstream
         with:
@@ -41,24 +41,60 @@ jobs:
         with:
           ref: "sync_upstream_${{steps.set_upstream.outputs.latest-release}}"
           token: ${{ secrets.GITHUB_TOKEN }}
-      # Sync this branch with upstream
-      - name: Sync upstream changes into PR branch
+          fetch-depth: 0
+      
+      # Sync with upstream while excluding .github directory
+      - name: Sync upstream changes into PR branch (excluding .github)
         id: sync
-        uses: aormsby/Fork-Sync-With-Upstream-action@1090e365224fc834e7e1de521c417ded2d6fcb53 #v3.4.1
-        with:
-          # target_sync_branch == the branch in your fork that you want to sync to upstream
-          target_sync_branch: "sync_upstream_${{steps.set_upstream.outputs.latest-release}}"
-          # REQUIRED 'target_repo_token' exactly like this!
-          target_repo_token: ${{ secrets.GITHUB_TOKEN }}
-          #  NOTE NOTE NOTE NOTE
-          # If you want to run this job and sync to upstream's master instead of releases
-          #  change the usptream_sync_branch to master
-          upstream_sync_branch: ${{steps.set_upstream.outputs.latest-release}}
-          upstream_sync_repo: panther-labs/panther-analysis
-          #test_mode: true
-          upstream_pull_args: "--allow-unrelated-histories"
+        run: |
+          # Configure Git
+          git config --global user.name "GitHub Action"
+          git config --global user.email "action@github.com"
+          
+          # Add the upstream repository as a remote and fetch the tag
+          git remote add upstream https://github.com/panther-labs/panther-analysis.git
+          git fetch upstream "refs/tags/${{steps.set_upstream.outputs.latest-release}}"
+          
+          # Fetch main branch to ensure we have its history
+          git fetch origin main
+          
+          # Reset the current branch to main to ensure it has the same history
+          git reset --hard origin/main
+          
+          # Clean working directory except .git and .github
+          find . -mindepth 1 -not -path "./.git*" -not -path "./.github*" -delete
+          
+          # Create a temp dir to hold upstream files
+          TEMP_DIR=$(mktemp -d)
+          
+          # Check out upstream files to temp directory
+          git --work-tree="$TEMP_DIR" checkout FETCH_HEAD -- .
+          
+          # Remove .github directory from temp directory
+          rm -rf "$TEMP_DIR/.github"
+          
+          # Copy files from temp directory to working directory (this won't include .github)
+          cp -r "$TEMP_DIR"/* .
+          
+          # Clean up temp directory
+          rm -rf "$TEMP_DIR"
+          
+          # Stage all changes
+          git add -A
+          
+          # Check if there are changes to commit
+          if git diff --cached --quiet; then
+            echo "No changes to commit - everything already synced"
+            echo "has_new_commits=false" >> $GITHUB_OUTPUT
+          else
+            # Commit and push the changes
+            git commit -m "Sync with upstream ${{steps.set_upstream.outputs.latest-release}} (excluding .github directory)"
+            git push -f origin sync_upstream_${{steps.set_upstream.outputs.latest-release}}
+            echo "has_new_commits=true" >> $GITHUB_OUTPUT
+          fi
+      
       # Create a PR from this branch back to this fork's primary branch
-      - uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea #v7.0.1
+      - uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea #v7.0.0
         id: create_pr
         name: Create a PR to bring upstream changes into the local repo primary branch
         if: steps.sync.outputs.has_new_commits == 'true'
@@ -67,6 +103,7 @@ jobs:
           script: |
             const fs = require('fs');
             try {
+              // First ensure the branch is properly based on main
               const response = await github.rest.pulls.create({
                 owner: '${{github.repository_owner}}',
                 repo: '${{  github.event.repository.name }}',
@@ -75,7 +112,14 @@ jobs:
                 base: '${{env.YOUR_REPO_PRIMARY_BRANCH_NAME}}',
               });
             } catch(e) {
-              if (e.response && e.response.data && e.response.data.errors && e.response.data.errors.length > 0 && e.response.data.errors[0].message && e.response.data.errors[0].message.includes('No commits between')) {
+              console.log("Error creating PR:", e.message);
+              
+              if (e.message && e.message.includes('no history in common')) {
+                console.log("Branches have no common history. This needs manual resolution.");
+                fs.appendFileSync(
+                  process.env['GITHUB_OUTPUT'],
+                  'pr_state=no-common-history\n');
+              } else if (e.response && e.response.data && e.response.data.errors && e.response.data.errors.length > 0 && e.response.data.errors[0].message && e.response.data.errors[0].message.includes('No commits between')) {
                 fs.appendFileSync(
                   process.env['GITHUB_OUTPUT'],
                   'pr_state=no-updates\n');
@@ -100,6 +144,12 @@ jobs:
         if: ${{ steps.create_pr.outputs.pr_state == 'no-updates' }}
         run: |
           echo "Local repo in sync with latest upstream release"
+      - id: pr_common_history
+        name: Branches have no common history
+        if: ${{ steps.create_pr.outputs.pr_state == 'no-common-history' }}
+        run: |
+          echo "The sync branch has no common history with main. This requires manual review."
+          echo "You may need to recreate the branch based on main first, then apply the changes."
       - id: pr_create_error
         name: Create PR step had an error
         if: ${{ steps.create_pr.outputs.pr_state == 'error' }}
