@@ -15,20 +15,18 @@ jobs:
       github.repository != 'panther-labs/panther-analysis'
     runs-on: ubuntu-latest
     steps:
-      # Set token based on what's available
       - name: Set token
         id: set_token
         run: |
           # Check if PANTHER_SYNC_UPSTREAM secret is available by trying to substitute it
-          MASKED_PAT="${{ secrets.PANTHER_SYNC_UPSTREAM }}"
-          if [ -n "$MASKED_PAT" ]; then
+          PAT_VALUE="${{ secrets.PANTHER_SYNC_UPSTREAM }}"
+          if [ -n "$PAT_VALUE" ]; then
             echo "Using PANTHER_SYNC_UPSTREAM for authentication"
-            echo "token=${{ secrets.PANTHER_SYNC_UPSTREAM }}" >> $GITHUB_OUTPUT
           else
             echo "PANTHER_SYNC_UPSTREAM not found, using default GITHUB_TOKEN"
             echo "token=${{ secrets.GITHUB_TOKEN }}" >> $GITHUB_OUTPUT
           fi
-      
+
       - uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea #v7.0.1
         id: set_upstream
         name: Check Upstream
