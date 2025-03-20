@@ -19,9 +19,10 @@ jobs:
         id: set_token
         run: |
           # Check if PANTHER_SYNC_UPSTREAM secret is available by trying to substitute it
-          PAT_VALUE="${{ secrets.PANTHER_SYNC_UPSTREAM }}"
-          if [ -n "$PAT_VALUE" ]; then
+          MASKED_PAT="${{ secrets.PANTHER_SYNC_UPSTREAM }}"
+          if [ -n "$MASKED_PAT" ]; then
             echo "Using PANTHER_SYNC_UPSTREAM for authentication"
+            echo "token=${{ secrets.PANTHER_SYNC_UPSTREAM }}" >> $GITHUB_OUTPUT
           else
             echo "PANTHER_SYNC_UPSTREAM not found, using default GITHUB_TOKEN"
             echo "token=${{ secrets.GITHUB_TOKEN }}" >> $GITHUB_OUTPUT
